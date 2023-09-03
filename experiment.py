@@ -8,6 +8,9 @@ import pyspark.sql.functions as F
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 spark = SparkSession.builder.appName("whitehouse").getOrCreate()
 
+import os
+os.system("mkdir data")
+os.system("wget -c -q -i links.txt -P data")
 
 # we ignore the time of loading the CSVs and data pre-processing
 
