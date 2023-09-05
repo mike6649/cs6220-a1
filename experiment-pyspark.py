@@ -1,74 +1,19 @@
+import os
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+
+
 import timeit
 from datetime import datetime
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-spark = SparkSession.builder.appName("whitehouse").getOrCreate()
+# spark = SparkSession.builder.appName("whitehouse").getOrCreate()
+spark = SparkSession.builder.master("spark://192.168.1.112:7077").getOrCreate()
 
-import os
 os.system("mkdir data")
 os.system("wget -c -q -i links.txt -P data")
 
 # we ignore the time of loading the CSVs and data pre-processing
-
-def create_pandas_df():
-    import glob
-
-    all_files = glob.glob("data/*.csv")
-    _dtypes1 = {
-        'Last Name': 'string',
-        'First Name': 'string',
-        'Middle Initial': 'string',
-        'UIN': 'string',
-        'BDGNBR': 'float64',
-        'Access Type': 'string',
-        'TOA': 'string',
-        'POA': 'string',
-        'TOD': 'string',
-        'POD': 'string',
-        'Appointment Made Date': 'string',
-        'Appointment Start Date': 'string',
-        'Appointment End Date': 'string',
-        'Appointment Cancel Date': 'string',
-        'Total People': 'int64',
-        'Last Updated By': 'string',
-        'POST': 'string',
-        'Last Entry Date': 'string',
-        'Terminal Suffix': 'string',
-        'Visitee Last Name': 'string',
-        'Visitee First Name': 'string',
-        'Meeting Location': 'string',
-        'Meeting Room': 'string',
-        'Caller Last Name': 'string',
-        'Caller First Name': 'string',
-        'CALLER_ROOM': 'string',
-        'RELEASEDATE': 'string',
-        'Caller Room': 'string',
-        'Release Date': 'string',
-    }
-
-
-    li = [pd.read_csv(filename, dtype=_dtypes1) for filename in all_files]
-    for _df in li:
-        _df.columns = li[0].columns
-    df = pd.concat(li, axis=0, ignore_index=True)
-
-    timestamp_cols = ["Appointment Made Date", "Appointment Start Date", "Appointment End Date", "Appointment Cancel Date", "Last Entry Date"]
-    for ts_col in timestamp_cols:
-        df[ts_col] = df[~df[ts_col].isna()][ts_col].apply(lambda x: pd.to_datetime(datetime.strptime(x, "%m/%d/%Y %H:%M"), infer_datetime_format=True) if x is not None else None)
-
-    def parseTOA(x):
-        if x is None:
-            return None
-        try:
-            return pd.to_datetime(datetime.strptime(x, "%b %d %Y %H:%M%p"))
-        except:
-            return None
-    df.TOA = df[~df.TOA.isna()].TOA.apply(parseTOA)
-    return df
 
 
 def create_pyspark_df():
@@ -111,30 +56,6 @@ def create_pyspark_df():
     return df
 
 
-def pandas_test_suite(df):
-    # 10 most frequent visitors
-    df.groupby(["First Name", "Last Name", "Middle Initial"]).size().sort_values(ascending=False).head(10)
-    # The 10 most frequently visited people (visitee_namelast, visitee_namefirst) in the White House.
-    df.groupby(["Visitee First Name", "Visitee Last Name"]).size().sort_values(ascending=False).head(10)
-    # The 10 most frequent visitor-visitee combinations.
-    df.groupby(["First Name", "Middle Initial", "Last Name", "Visitee First Name", "Visitee Last Name"]).size().sort_values(ascending=False).head(10)
-
-    # lateness histogram
-    delta = (df[~df.TOA.isna()].TOA - df[~df.TOA.isna()]["Appointment Start Date"]).dt.seconds / 60
-    bins = pd.cut(delta, list(np.linspace(-80, +120, 50)))
-    bins[~bins.isna()].groupby(bins).count()
-
-    # duration histogram
-    duration = (df["Appointment End Date"] - df["Appointment Start Date"]).dt.seconds / 60
-    bins = pd.cut(duration, list(np.linspace(0, +1200, 100)))
-    bins[~bins.isna()].groupby(bins).count()
-
-    # people histogram
-    people = df["Total People"]
-    bins = pd.cut(people, list(np.linspace(0, 200, 50)))
-    bins[~bins.isna()].groupby(bins).count()
-
-
 def pyspark_test_suite(df):
     # 10 most frequent visitors
     df.groupBy(
@@ -173,34 +94,28 @@ def pyspark_test_suite(df):
     ).rdd.flatMap(lambda x: x).histogram(list(np.linspace(0, 200, 50)))
 
 
-
 print("Loading spark dataframe")
 spark_df = create_pyspark_df().cache()
 pyspark_test_suite(spark_df)  # force spark to actually load the data
-print("Loading pandas dataframe")
-pd_df = create_pandas_df()
 
 if __name__ == "__main__":
     print("started scripts")
-    subset_fracs = [.1, .2, .5, 1]
-    pandas_times = []
+    multiplier = [1, 2, 5, 10, 20]
+    N = spark_df.count()
     pyspark_times = []
-    for frac in subset_fracs:
-        if frac == 1:
+    for mult in multiplier:
+        if mult == 1:
             _spark_df = spark_df
-            _pd_df = pd_df
         else:
-            _spark_df = spark_df.sample(withReplacement=False, fraction=frac)
-            _pd_df = pd_df.sample(replace=False, frac=frac)
-            pyspark_test_suite(_spark_df) # force spark to sample the data
-        print(f"{frac=}")
-        pandas_time = timeit.Timer(lambda: pandas_test_suite(_pd_df)).timeit(10)
-        pyspark_time = timeit.Timer(lambda: pyspark_test_suite(_spark_df)).timeit(10)
-        print(f"{pandas_time=}, {pyspark_time=}")
-        pandas_times.append(pandas_time)
+            _spark_df = spark_df.withColumn("dummy", F.explode(F.lit([1]*mult))).drop("dummy")
+            assert N * mult == _spark_df.count(), _spark_df.count()
+            pyspark_test_suite(_spark_df)  # force spark to evaluate the duplication
+        print(f"{mult=}")
+        pyspark_time = timeit.Timer(
+            lambda: pyspark_test_suite(_spark_df)).timeit(10) / 10
+        print(f"{pyspark_time=}")
         pyspark_times.append(pyspark_time)
 
-    print(f"{pandas_times=}")
     print(f"{pyspark_times=}")
 
 spark.stop()
