@@ -7,8 +7,7 @@ from datetime import datetime
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-# spark = SparkSession.builder.appName("whitehouse").getOrCreate()
-spark = SparkSession.builder.master("spark://192.168.1.112:7077").getOrCreate()
+spark = SparkSession.builder.appName("whitehouse").getOrCreate()
 
 os.system("mkdir data")
 os.system("wget -c -q -i links.txt -P data")
